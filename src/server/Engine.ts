@@ -97,6 +97,86 @@ class Engine extends ServerComponent implements IEngine{
 		
 			
 	}
+
+
+  async migrate(instanceId: string, targetDefinitionName: string): Promise<Execution> {
+    let execution;
+
+    const definitions = this.definitions;
+    const source = await definitions.getSource(targetDefinitionName);
+
+    try {
+      const instance = await this.server.dataStore.findInstance({ id: instanceId });
+
+      execution = await this.restore(instance.id);
+      const currentState = execution.getState();
+
+      const clonedExecution = await Execution.getCopy(this.server, { ...currentState, source })
+
+
+
+      await this.release(execution);
+
+      return execution;
+    }
+    catch (exc) {
+      return await this.exception(exc,execution);
+    }
+    finally {
+      if (execution && execution.isLocked)
+        await this.release(execution);
+    }
+
+    // console.log(instance.definition.nodes)
+
+    // await bpmnServer.engine.restart({ id: "5680d053-448d-4ac7-9058-994561c520f0", "items.id": "78712349-8994-4663-b4a9-554925aea690" }, { }, "user1")
+    //
+    // const { logs, ...state} = instance.getState();
+    // console.log(state)
+    // const a = await Execution.getCopy(bpmnServer, { ...state, id: "testaaaa", _id: undefined, logs: [], saved: false } as unknown as IInstanceData)
+    //
+    // this.logger.log(``);
+    //
+    //
+    // const definitions = this.definitions;
+    // const source = await definitions.getSource(name);
+    //
+    // const execution = new Execution(this.server,name, source);
+    // execution.userName = userName;
+    // execution.operation='start';
+    // execution.options=options;
+    //
+    // this.cache.add(execution);
+    //
+    // try {
+    //   await this.lock(execution.id);
+    //   execution.isLocked = true;
+    //
+    //
+    //   if (options['noWait'] == true) {
+    //     execution.worker = execution.execute(startNodeId, this.sanitizeData(data), options);
+    //     execution.worker.then(obj=>{
+    //       this.logger.log('after worker is done releasing ..'+execution.instance.id);
+    //       this.release(execution);
+    //     });
+    //     return execution;
+    //   }
+    //   else {
+    //     const waiter = await execution.execute(startNodeId, this.sanitizeData(data), options);
+    //     await this.release(execution);
+    //     this.logger.log(`.engine.start ended for ${name}`);
+    //     return execution;
+    //   }
+    // }
+    // catch(exc) {
+    //   return await this.exception(exc,execution);
+    // }
+    // finally {
+    //   if (execution && execution.isLocked)
+    //     await this.release(execution);
+    // }
+
+  }
 	
 	
 	/**
