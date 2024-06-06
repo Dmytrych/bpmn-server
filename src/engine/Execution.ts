@@ -7,14 +7,12 @@ import { Loop} from './Loop';
 import { Element, Node, Flow , Definition, CallActivity, Process } from '../elements/'
 import { EXECUTION_EVENT, NODE_ACTION, FLOW_ACTION, TOKEN_STATUS, EXECUTION_STATUS, ITEM_STATUS, IDefinition } from '../';
 import { IInstanceData, IBPMNServer, IExecution, IAppDelegate , DefaultAppDelegate , DataHandler } from '../';
-import { EventEmitter } from 'events';
 import { BPMNServer, ServerComponent } from '../server';
 import { InstanceObject } from './Model';
 import {IMigrationOptions} from "../interfaces/migration";
 
 
 const { v4: uuidv4 } = require('uuid');
-
 
 /**
  *  is accessed two ways:
@@ -419,11 +417,13 @@ public async restart(itemId, inputData:any,userName, options={}) :Promise<IExecu
     }
     async save() {
         // save here :
- 
-        this.log(`..Saving instance ${this.instance.id}`+JSON.stringify(this.instance.data));
+
+        this.log(`..Saving instance ${this.instance.id}`+ JSON.stringify(this.instance.data));
         
         const state = this.getState();
-    
+
+        console.log("Instance fix");
+
         this['state']=state;
 
         await this.doExecutionEvent(this,EXECUTION_EVENT.process_saving);
@@ -433,6 +433,7 @@ public async restart(itemId, inputData:any,userName, options={}) :Promise<IExecu
     }
     getItems(): Item[] {
         const items = [];
+
         this.tokens.forEach(t => {
             t.path.forEach(i => {
                 items.push(i);
@@ -470,7 +471,6 @@ public async restart(itemId, inputData:any,userName, options={}) :Promise<IExecu
         this.instance.loops = loops;
         this.instance.tokens = tokens;
 
-        
         return this.instance;
     }
     private static findSavePoint(state,itemId) {
@@ -488,6 +488,72 @@ public async restart(itemId, inputData:any,userName, options={}) :Promise<IExecu
         return null;
 
     }
+  static async getFromInstance(server, state: IInstanceData, itemId=null): Promise<Execution> {
+    let stateTokens=state.tokens;
+    let stateItems=state.items;
+    let stateLoops=state.loops;
+
+    if (itemId!==null) {
+      let savePoint=Execution.findSavePoint(state,itemId);
+      if (savePoint) {
+        stateTokens=savePoint.tokens||[];
+        stateItems=savePoint.items||[];
+        stateLoops=savePoint.loops||[];
+      }
+      else
+        server.logger.error("***Error*** No savePoint found for item "+itemId);
+    }
+    const source = state.source;
+    const execution = new Execution(server, state.name, source,state);
+
+
+    await execution.definition.load();
+
+    const tokenLoops = [];
+    const tokens = new Map();
+    stateTokens.forEach(t => {
+      const token = Token.load(execution, t);
+      if (t.loopId!==null)
+        tokenLoops.push({ id: t.id, loopId: t.loopId });
+      execution.tokens.set(token.id, token);
+      tokens.set(token.id, token);
+    });
+
+    const loops = new Map();
+    stateLoops.forEach(l => {
+      l.execution = execution;
+      const loop = Loop.load(execution, l);
+      loops.set(loop.id, loop);
+    });
+
+    tokenLoops.forEach(tl => {
+      const token = tokens.get(tl.id);
+      const loop = loops.get(tl.loopId);
+      token.loop = loop;
+    });
+
+    // items
+    const items = [];
+    stateItems.forEach(i => {
+      const token = execution.getToken(i.tokenId);
+      const item = Item.load(execution, i, token);
+      token.path.push(item);
+      items.push(item);
+    });
+
+    // token.originItem
+
+    stateTokens.forEach(t => {
+      const token = execution.getToken(t.id);
+      if (t.originItem)
+        items.forEach(it => {
+          if (it.id == t.originItem)
+            token.originItem = it;
+        });
+    });
+
+    return execution;
+  }
     /**
      *  re-enstate the execution from db
      * @param state
@@ -503,98 +569,6 @@ public async restart(itemId, inputData:any,userName, options={}) :Promise<IExecu
 
         await execution.restored();
         return execution;
-    }
-    static async getFromInstance(server, state: IInstanceData, itemId=null): Promise<Execution> {
-      let stateTokens=state.tokens;
-      let stateItems=state.items;
-      let stateLoops=state.loops;
-
-      if (itemId!==null) {
-        let savePoint=Execution.findSavePoint(state,itemId);
-        if (savePoint) {
-          stateTokens=savePoint.tokens||[];
-          stateItems=savePoint.items||[];
-          stateLoops=savePoint.loops||[];
-        }
-        else
-          server.logger.error("***Error*** No savePoint found for item "+itemId);
-      }
-      const source = state.source;
-      const execution = new Execution(server, state.name, source,state);
-
-
-      await execution.definition.load();
-
-      const tokenLoops = [];
-      const tokens = new Map();
-      stateTokens.forEach(t => {
-        const token = Token.load(execution, t);
-        if (t.loopId!==null)
-          tokenLoops.push({ id: t.id, loopId: t.loopId });
-        execution.tokens.set(token.id, token);
-        tokens.set(token.id, token);
-      });
-
-      const loops = new Map();
-      stateLoops.forEach(l => {
-        l.execution = execution;
-        const loop = Loop.load(execution, l);
-        loops.set(loop.id, loop);
-      });
-
-      tokenLoops.forEach(tl => {
-        const token = tokens.get(tl.id);
-        const loop = loops.get(tl.loopId);
-        token.loop = loop;
-      });
-
-      // items
-      const items = [];
-      stateItems.forEach(i => {
-        const token = execution.getToken(i.tokenId);
-        const item = Item.load(execution, i, token);
-        token.path.push(item);
-        items.push(item);
-      });
-
-      // token.originItem
-
-      stateTokens.forEach(t => {
-        const token = execution.getToken(t.id);
-        if (t.originItem)
-          items.forEach(it => {
-            if (it.id == t.originItem)
-              token.originItem = it;
-          });
-      });
-
-      return execution;
-    }
-    // TODO: Generate name
-    public async getMigratedVersion(targetDefinitionName, newName): Promise<Execution> {
-      try {
-        const currentState = this.getState();
-
-        let newTokens=[];
-        let newItems=[];
-        let newLoops=[];
-
-        const targetSource = await this.definitions.getSource(targetDefinitionName);
-        const execution = new Execution(this.server, newName, targetSource, state);
-
-
-
-        await this.release(execution);
-
-        return execution;
-      }
-      catch (exc) {
-        return await this.exception(exc,execution);
-      }
-      finally {
-        if (execution && execution.isLocked)
-          await this.release(execution);
-      }
     }
     async restored() {
         await this.doExecutionEvent(this,EXECUTION_EVENT.process_restored);

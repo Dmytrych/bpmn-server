@@ -1,19 +1,17 @@
 
-import { Execution } from '../';
-import { ServerComponent } from '../server/ServerComponent';
+import {Execution, EXECUTION_STATUS, IBPMNServer, IInstanceData, IMigrator, Item, Loop, Token} from '../';
+import { ServerComponent } from './ServerComponent';
 import { EXECUTION_EVENT, IEngine} from "../interfaces";
 
-import { DataStore } from '../datastore';
-
+const { v4: uuidv4 } = require('uuid');
 
 class Engine extends ServerComponent implements IEngine{
 
 	runningCounter=0;
 	callsCounter=0;
-	constructor(server) {
-		
+	constructor(server: IBPMNServer) {
 		super(server);
-    }
+  }
 
 	/**
 	 *	loads a definitions  and start execution
@@ -108,8 +106,7 @@ class Engine extends ServerComponent implements IEngine{
 			
 	}
 
-
-  async migrate(instanceId: string, targetDefinitionName: string): Promise<Execution> {
+  public async migrate(instanceId: string, targetDefinitionName: string): Promise<Execution> {
     let execution;
 
     const definitions = this.definitions;
@@ -119,11 +116,45 @@ class Engine extends ServerComponent implements IEngine{
       const instance = await this.server.dataStore.findInstance({ id: instanceId });
 
       execution = await this.restore(instance.id);
-      const currentState = execution.getState();
+      const preMigrationState = execution.getState();
+      const executionItems = await execution.getItems();
 
-      const clonedExecution = await Execution.getCopy(this.server, { ...currentState, source })
+      console.log(`Original execution has ${executionItems.length} items`)
 
+      const { version, name, startedAt, endedAt, data, parentItemId } = preMigrationState;
+      const newId = uuidv4();
 
+      const migratedInfo = {
+        id: newId,
+        items: executionItems.map((item) => item.save()), // converting it to DB entity
+        name: targetDefinitionName,
+        version,
+        startedAt,
+        endedAt,
+        status: EXECUTION_STATUS.running,
+        saved: false,
+        data,
+        source,
+        parentItemId,
+        logs: [],
+        tokens: [],
+        loops: []
+      }
+
+      console.log(`The target will have ${migratedInfo.items.length} items`)
+
+      const clonedExecution = new Execution(this.server, targetDefinitionName, source, migratedInfo)
+
+      console.log("Created a new execution")
+
+      const migrator = new InstanceMigrator(this.server);
+      await migrator.migrate(execution, clonedExecution)
+
+      console.log("Migrated. Saving...")
+
+      await clonedExecution.save()
+
+      console.log("Execution saved")
 
       await this.release(execution);
 
@@ -259,10 +290,11 @@ class Engine extends ServerComponent implements IEngine{
 
 		const live = this.cache.getInstance(instance.id);
 		if (live) {
-
+      console.log("FOUNT CACHE")
 			execution = live;
 		}
 		else {
+      console.log("FOUNT LIVE")
 			execution = await Execution.restore(this.server,instance,itemId);
 
 			execution.isLocked = true;
@@ -271,7 +303,6 @@ class Engine extends ServerComponent implements IEngine{
 			execution.server.dataStore = newDataStore;
 
 			newDataStore.monitorExecution(execution); */
-
 
 			this.cache.add(execution);
 			this.logger.log("restore completed: "+instance.saved);
@@ -566,7 +597,7 @@ class Engine extends ServerComponent implements IEngine{
 				this.logger.log('Signal end data',res.instance.data)
 				instances.push(res.instance.id);
 			}
-        }
+    }
 		let itemsQuery = {};
 		if (matchingQuery)
 			itemsQuery = Object.assign({}, matchingQuery);
@@ -606,4 +637,125 @@ class Engine extends ServerComponent implements IEngine{
 }
 
 
-export { Engine};
+class InstanceMigrator extends ServerComponent implements IMigrator {
+  public constructor(server: IBPMNServer) {
+    super(server);
+  }
+
+  public async migrate(sourceExecution: Execution, execution: Execution) {
+    const oldTokens = Array.from(sourceExecution.tokens.values())
+
+    console.log("Starting migration...")
+    console.log(`Source has ${oldTokens.length} tokens`)
+
+    await execution.definition.load();
+
+    console.log(`Successfully loaded target definition`)
+    const newTokens = await this.migrateTokens(oldTokens, sourceExecution, execution);
+
+    console.log(newTokens.map((token) => token.path))
+    console.log(`Target exectuion has ${newTokens.length} tokens`)
+    // const loops = this.migrateLoops(prevState)
+
+    newTokens.forEach((token) => execution.tokens.set(token.id, token));
+  }
+
+  private async migrateTokens(tokens: Token[], sourceExecution: Execution, targetExecution: Execution){
+    const migratedTokens: Token[] = [];
+
+    const findParentToken = async (parentId: string) => {
+      const foundParent = migratedTokens.find((token) => token.id === parentId);
+      if (foundParent) {
+        return foundParent;
+      }
+
+      const unprocessedParent = tokens.find((token) => token.id === parentId);
+      if (!unprocessedParent) {
+        throw new Error("Could not find parent token with id: " + parentId);
+      }
+
+      const token = await this.processTokenMigration(unprocessedParent, sourceExecution, targetExecution, findParentToken)
+      migratedTokens.push(token);
+      return token;
+    }
+
+    for (const token of tokens) {
+      migratedTokens.push(await this.processTokenMigration(token, sourceExecution, targetExecution, findParentToken))
+    }
+
+    console.log(`migratedTokens: ${migratedTokens.length}`)
+
+    return migratedTokens;
+  }
+
+  private async processTokenMigration(token: Token, sourceExecution: Execution, targetExecution: Execution, findParentCallback: (parentId: string) => Promise<Token | undefined>): Promise<Token> {
+    let migratedParentToken;
+    if (token.parentToken) {
+      migratedParentToken = await findParentCallback(token.parentToken.id)
+
+      if (!migratedParentToken) {
+        const error = "***Error*** Node migration failed. Parent not found"
+        this.logger.log(error)
+        throw new Error(error)
+      }
+    }
+
+    const migratedToken = await this.migrateToken(token, targetExecution, migratedParentToken)
+    const sourceItem = sourceExecution.getItems().find((item) => item.elementId === token.currentNode.id && item.tokenId === token.id);
+    if (!sourceItem) {
+      const error = "***Error*** Node migration failed. Migrated token item not found"
+      this.logger.log(error)
+      throw new Error(error)
+    }
+
+    // TODO: We need to change the queries the engine runs. This is needed because some query searches all items in all instances, expecting all ids to be different.
+    const clonedItem = {...sourceItem} as Item
+    clonedItem.id = uuidv4()
+
+    migratedToken.path = [clonedItem]
+
+    return migratedToken;
+  }
+
+  // TODO: Add migration of input and output fields
+  // TODO: Add possibility to map the tokens to new nodes if theirs do not exist (creat a new Item then, and remove the current. Use "goNext")
+  private async migrateToken(token: Token, targetExecution: Execution, parent: Token): Promise<Token> {
+    const tokenCurrentNode = targetExecution.definition.getNodeById(token.currentNode?.id);
+    const tokenStartNode = targetExecution.definition.getNodeById(token.startNodeId);
+
+    if (!tokenCurrentNode || !tokenStartNode) {
+      console.log(`currentNodeId: ${tokenCurrentNode?.id} startNodeId: ${token.startNodeId}`)
+      console.log(`Expected`)
+      console.log(`currentNodeId: ${token.currentNode?.id} startNodeId: ${token.currentNode?.id}`)
+      // TODO: Migrate with mapping in this case
+      const error = "***Error*** Node migration failed"
+      this.logger.log(error)
+      throw new Error(error)
+    }
+
+    const migratedToken = await Token.startNewToken(token.type, targetExecution, token.startNodeId, token.dataPath, parent, null, null, token.data, true, token.itemsKey)
+    // const migratedToken = new Token(token.type, targetExecution, tokenStartNode, token.dataPath, parent)
+    migratedToken.id = token.id;
+    migratedToken.startNodeId = token.startNodeId;
+    migratedToken.currentNode = tokenCurrentNode;
+    migratedToken.status = token.status;
+    migratedToken.itemsKey = token.itemsKey;
+    migratedToken.path = [];
+
+    console.log(`Migrated token with node ${tokenCurrentNode.id} and start node ${tokenStartNode.id}`)
+
+    return migratedToken;
+  }
+
+  // TODO: Loop migration should have settings to restart looping or move it
+  private migrateLoops(prevState: IInstanceData): Loop[] {
+    if (!prevState.loops?.length) {
+      this.logger.log("***Error*** Loop migration is not supported yet.")
+    }
+
+    return [];
+  }
+
+}
+
+export { Engine, InstanceMigrator };

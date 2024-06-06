@@ -102,6 +102,8 @@ class DataStore extends ServerComponent  implements IDataStore {
 	private async saveInstance(instance,options={}) {
 //		this.logger.log("Saving...");
 
+    console.log("saving 1")
+
 		let saveObject=
 			{	version: instance.version,endedAt: instance.endedAt, status: instance.status, saved: instance.saved,
 				tokens: instance.tokens, items: instance.items, loops: instance.loops,
@@ -112,6 +114,8 @@ class DataStore extends ServerComponent  implements IDataStore {
 			instance.version =0;
 		else 
 			instance.version++;
+
+    console.log("saving 2")
 
 		if (this.enableSavePoints) {
 			let lastItem=instance.items[instance.items.length-1].id;
@@ -126,9 +130,12 @@ class DataStore extends ServerComponent  implements IDataStore {
 			saveObject['savePoints']=instance['savePoints'];
 		}
 
-		var recs;
+    console.log("saving 3")
+
+    var recs;
 		if (!instance.saved) {
 			instance.saved = new Date();
+      console.log(`Saving ${JSON.stringify(instance)}`)
 
 			await this.db.insert(this.dbConfiguration.db, Instance_collection, [instance]);
 

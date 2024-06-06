@@ -1,9 +1,10 @@
 {
   "name": "bpmn-server",
-  "version": "2.2.3",
+  "version": "2.2.10",
   "description": "BPMN 2.0 Server including Modeling, Execution and Presistence, an open source for Node.js",
   "license": "MIT",
   "scripts": {
+    "pack": "npm run clean && npm run build && npm pack",
     "build": "tsc --build",
     "clean": "rimraf dist",
     "docs:api": "rimraf ../docs/docs/api && typedoc --options typedoc.json"

@@ -166,8 +166,6 @@ class Token implements IToken {
 
         token.log('Token(*).startNewToken:  starting new Token with id='+token.id+' start node='+startNode.id);
 
-
-
         execution.tokens.set(token.id, token);
         token.appendData(data, originItem);
         if (noExecute==false)
@@ -175,6 +173,7 @@ class Token implements IToken {
         return token;
     } 
     save() {
+        console.log("Retrieving the token info through 'save'")
         let parentToken, originItem, loopId;
         if (this.parentToken)
             parentToken = this.parentToken.id;

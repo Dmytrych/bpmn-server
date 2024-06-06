@@ -1,4 +1,15 @@
-import { IExecution , ILogger , IItem, IItemData , IDefinition, IConfiguration, IAppDelegate, IDataStore,IModelsDatastore } from '../';
+import {
+  IExecution,
+  ILogger,
+  IItem,
+  IItemData,
+  IDefinition,
+  IConfiguration,
+  IAppDelegate,
+  IDataStore,
+  IModelsDatastore,
+  Execution
+} from '../';
 import { EventEmitter } from 'events';
 
 
@@ -112,8 +123,12 @@ interface IEngine {
     throwMessage(messageId, data: {}, matchingQuery: {}): Promise<IExecution>;
     throwSignal(signalId, data: {}, matchingQuery: {});
     restart(itemQuery, data:any,userName, options) :Promise<IExecution>;
+    migrate(instanceId: string, targetDefinitionName: string): Promise<Execution>
+
+}
 
 
+export interface IMigrator {
 }
 
 interface ICron {
